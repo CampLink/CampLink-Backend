@@ -70,3 +70,101 @@ In:
 Out:
 
 сообщение об успешной оплате по бронированию или об успешном бронировании
+
+
+---
+
+# РЕАЛИЗАЦИЯ
+
+Веб-сервис написан на **C# / .NET 8** по многослойной архитектуре, СУБД — **PostgreSQL**, доступ к данным — **EF Core**. Схема БД соответствует `Scheme/DatabaseScheme.erd.json`. Только REST API (+ Swagger).
+
+## Структура решения
+
+```
+CampLink.sln
+├── src/
+│   ├── CampLink.Domain/          # Сущности + перечисления (Client, Resource, Booking,
+│   │                              #   BookingLine, Inventory, CalendarDay, enums)
+│   ├── CampLink.Application/     # DTO + интерфейсы сервисов (Contracts), исключения
+│   ├── CampLink.Infrastructure/  # DbContext маппинг под существующую схему, реализация сервисов,
+│   │                              #   расчёт доступности, инициализатор календаря
+│   └── CampLink.WebApi/          # ASP.NET Core Web API: контроллеры, Program.cs, Swagger
+│
+└── (схема БД — внешний репозиторий CampLink-DataBase: SQL/init_db.sql, schema.sql, seed.sql)
+```
+
+## Запуск
+
+Сервис работает с **существующей** базой данных из репозитория `C:\Camp\CampLink-DataBase`
+(скрипты `SQL/init_db.sql` → `schema.sql` → `seed.sql`). Схема не создаётся и не изменяется из кода:
+EF Core настроен на уже созданную структуру (lowercase/snake_case таблицы и колонки, нативные типы PostgreSQL `ENUM`,
+`GENERATED ALWAYS AS IDENTITY`).
+
+1. Убедитесь, что установлен .NET 8 SDK.
+2. Разверните БД по инструкции репозитория `CampLink-DataBase` и при необходимости поправьте строку подключения в `src/CampLink.WebApi/appsettings.json` (по умолчанию: БД `camplink`, роль `camplink_app`).
+3. Выполните:
+   ```bash
+   dotnet restore
+   dotnet run --project src/CampLink.WebApi
+   ```
+4. Откройте Swagger: http://localhost:5000/swagger
+
+## Согласование со схемой CampLink-DataBase
+
+- Имена таблиц/колонок приводятся к схеме БД через snake_case-соглашение + явные `ToTable("...")`.
+- Enum-поля (`ItemType`, `UnitType`, `MovementType`, `OperationType`, `PaymentType`, `DayType`) маппятся на нативные enum-типы PostgreSQL через `HasPostgresEnum`; метки членов заданы атрибутами `[PgName]` — соответствуют `schema.sql`.
+
+## Доменные правила
+
+- **Поштучный товар** (`ItemType=Unit`): остатки ведутся на конкретную дату — одна строка «ввод остатков» на день.
+- **Прокатный товар** (`ItemType=Rental`): минимальная единица учёта — **час**; «ввод остатков» заводится на каждый час суток (0..23). Бронирование задаётся целыми часами.
+- **Кратность** (`Resource.Multiplicity`): минимальное количество/время бронирования. Для проката проверяется, что число часов кратно `Multiplicity` (например, беседка `Multiplicity=24` — минимум на сутки).
+- **Доступность** = «ввод остатков» + «приход» − «расход» (отменённые расходы не учитываются).
+- **Статусы `Inventory`**:
+  - `MovementType`: 0 — ввод остатков, 1 — приход, 2 — расход.
+  - `OperationType`: 0 — резерв, 1 — подтверждено, 2 — куплено, 3 — отменено.
+  - `PaymentType`: 0 — нал, 1 — безнал.
+
+## API
+
+| Метод | Путь | Описание | README |
+|---|---|---|---|
+| GET | `/api/resources` | Справочник ресурсов | — |
+| POST | `/api/resources` | Создать ресурс | — |
+| GET | `/api/resources/available?date=2026-09-11` | Доступные ресурсы на дату | Get |
+| GET | `/api/resources/{id}` | Ресурс по ID | — |
+| POST | `/api/clients` | Создать клиента | Post (частично) |
+| GET | `/api/clients/{id}` | Клиент | — |
+| GET | `/api/clients/{id}/bookings` | Бронирования клиента | Get: Клиент ID |
+| POST | `/api/bookings` | Создать бронирование (отдаёт BookingId) | Post |
+| GET | `/api/bookings/{id}` | Бронирование по ID | Get: Бронирование ID |
+| PATCH | `/api/bookings/{id}/status` | Управление оплатой и бронированием | Управление оплатой |
+| POST | `/api/inventory/openings` | Ввод остатков | Инвентаризация |
+| GET | `/api/inventory` | Журнал запасов (фильтры) | — |
+| GET | `/api/finance/report?from=&to=` | Фин. отчёт (расход + куплено) | Фин. отчёт |
+
+### Пример: создание бронирования
+
+```json
+{
+  "client": { "name": "Иванов И.", "contacts": "+7 900 000-00-00" },
+  "lines": [
+    { "resourceId": 1, "quantity": 2, "date": "2026-09-15" },
+    { "resourceId": 4, "quantity": 1, "date": "2026-09-15",
+      "startTime": "2026-09-15T10:00:00", "endTime": "2026-09-15T14:00:00" }
+  ]
+}
+```
+
+### Пример: управление оплатой/бронированием
+
+```json
+{
+  "paymentType": 1,
+  "paymentStatus": 1,
+  "bookingStatus": 0
+}
+```
+
+
+сообщение об успешной оплате по бронированию или об успешном бронировании
